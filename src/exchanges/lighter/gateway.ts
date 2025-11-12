@@ -119,6 +119,7 @@ const KLINE_DEFAULT_COUNT = 120;
 const DEFAULT_TICKER_POLL_MS = 3000;
 const DEFAULT_KLINE_POLL_MS = 15000;
 const WS_HEARTBEAT_INTERVAL_MS = 5_000;
+const CLIENT_PING_INTERVAL_MS = 2_000;
 const WS_STALE_TIMEOUT_MS = 20_000;
 const FEED_STALE_TIMEOUT_MS = 8_000;
 const STALE_CHECK_INTERVAL_MS = 2_000;
@@ -198,6 +199,7 @@ export class LighterGateway {
   private readonly wsUrl: string;
   private connectPromise: Promise<void> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
   private lastMessageAt = 0;
 
   private accountDetails: LighterAccountDetails | null = null;
@@ -528,6 +530,7 @@ export class LighterGateway {
       const cleanup = () => {
         ws.removeAllListeners();
         this.stopHeartbeat();
+        this.stopClientPing();
         if (this.ws === ws) {
           this.ws = null;
         }
@@ -541,6 +544,7 @@ export class LighterGateway {
         try {
           this.lastMessageAt = Date.now();
           this.startHeartbeat();
+          this.startClientPing();
           await this.subscribeChannels();
           this.startStaleMonitor();
           settled = true;
@@ -640,6 +644,7 @@ export class LighterGateway {
       this.logger("ws:terminate", error);
     }
     this.stopHeartbeat();
+    this.stopClientPing();
     this.scheduleReconnect();
   }
 
@@ -656,6 +661,7 @@ export class LighterGateway {
           this.logger("ws:terminate", error);
         } finally {
           this.stopHeartbeat();
+          this.stopClientPing();
           this.scheduleReconnect();
         }
         return;
@@ -675,6 +681,26 @@ export class LighterGateway {
     }
   }
 
+  private startClientPing(): void {
+    if (this.pingTimer) return;
+    this.pingTimer = setInterval(() => {
+      const ws = this.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.send(JSON.stringify({ type: "ping" }));
+      } catch (error) {
+        this.logger("ws:clientPing", error);
+      }
+    }, CLIENT_PING_INTERVAL_MS);
+  }
+
+  private stopClientPing(): void {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+  }
+
   private handleMessage(data: WebSocket.RawData): void {
     try {
       const text = typeof data === "string" ? data : data.toString("utf8");
@@ -682,6 +708,9 @@ export class LighterGateway {
       const type = message?.type;
       switch (type) {
         case "connected":
+          break;
+        case "ping":
+          this.handlePing(message);
           break;
         case "subscribed/order_book":
           this.handleOrderBookSnapshot(message);
@@ -706,6 +735,28 @@ export class LighterGateway {
       }
     } catch (error) {
       this.logger("ws:message", error);
+    }
+  }
+
+  private handlePing(message: Record<string, unknown> | null | undefined): void {
+    const extraPayload: Record<string, unknown> = {};
+    if (message && typeof message === "object") {
+      for (const [key, value] of Object.entries(message)) {
+        if (key === "type") continue;
+        extraPayload[key] = value;
+      }
+    }
+    this.sendPong(extraPayload);
+  }
+
+  private sendPong(extra: Record<string, unknown> = {}): void {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const payload = Object.keys(extra).length ? { ...extra, type: "pong" } : { type: "pong" };
+    try {
+      ws.send(JSON.stringify(payload));
+    } catch (error) {
+      this.logger("ws:pong", error);
     }
   }
 
