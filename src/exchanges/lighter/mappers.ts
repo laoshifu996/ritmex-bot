@@ -21,6 +21,7 @@ import type {
 } from "./types";
 import { coerceBooleanFlag, normalizeBooleanFlag } from "./flags";
 import { normalizeOrderIdentity } from "./order-identity";
+import { normalizeOrderStatus } from "./status";
 
 export function toDepth(symbol: string, snapshot: LighterOrderBookSnapshot): AsterDepth {
   const toLevels = (levels: LighterOrderBookLevel[]): AsterDepthLevel[] =>
@@ -104,7 +105,7 @@ export function lighterOrderToAster(symbol: string, order: LighterOrder): AsterO
     symbol,
     side,
     type: mapOrderType(order.type),
-    status: order.status ?? order.trigger_status ?? "UNKNOWN",
+    status: normalizeOrderStatus(order.status ?? order.trigger_status ?? "UNKNOWN"),
     price: order.price ?? "0",
     origQty: order.initial_base_amount ?? "0",
     executedQty: computeExecutedQty(order),

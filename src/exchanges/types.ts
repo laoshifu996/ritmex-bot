@@ -316,6 +316,9 @@ export interface AsterTicker {
   priceChange?: string;
   priceChangePercent?: string;
   weightedAvgPrice?: string;
+  bidPrice?: string;
+  askPrice?: string;
+  markPrice?: string;
   lastQty?: string;
   openTime?: number;
   closeTime?: number;
