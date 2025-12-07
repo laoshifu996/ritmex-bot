@@ -199,6 +199,7 @@ export class LighterGateway {
   private readonly l1Address: string | null;
   private loggedCreateOrderPayload = false;
   private readonly logTxInfo: boolean;
+  private readonly primaryApiKeyIndex: number;
   private lastWsPositionUpdateAt = 0;
   private readonly lastWsPositionByMarket = new Map<number, number>();
   private httpPositionsEmptyLogged = false;
@@ -296,6 +297,7 @@ export class LighterGateway {
     if (this.forcedSpotPreset && this.apiKeyIndices.length > 1) {
       this.apiKeyIndices.splice(1); // stick to the first key to avoid nonce drift
     }
+    this.primaryApiKeyIndex = this.apiKeyIndices[0]!;
     this.nonceManager = new HttpNonceManager({
       accountIndex: options.accountIndex,
       apiKeyIndices: this.apiKeyIndices,
@@ -361,7 +363,8 @@ export class LighterGateway {
 
     const maxAttempts = 3;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const { apiKeyIndex, nonce } = this.nonceManager.next();
+      const { apiKeyIndex, nonce } =
+        this.primaryApiKeyIndex != null ? this.nonceManager.nextFor(this.primaryApiKeyIndex) : this.nonceManager.next();
       try {
         const signed = await this.signer.signCreateOrder({
           ...signParams,
