@@ -58,6 +58,8 @@ export class OffsetMakerEngine {
   private accountSnapshot: AsterAccountSnapshot | null = null;
   private depthSnapshot: AsterDepth | null = null;
   private tickerSnapshot: AsterTicker | null = null;
+  private lastKline: AsterKline | null = null;
+  private liveCandle: { startMs: number; open: number; close: number } | null = null;
   private openOrders: AsterOrder[] = [];
 
   private readonly locks: OrderLockMap = {};
@@ -80,6 +82,8 @@ export class OffsetMakerEngine {
   private quoteAssetId: number | null = null;
   private spotEntryPrice: number | null = null;
   private lastSpotWallet = 0;
+  private spotKlineUp: boolean | null = null;
+  private lastSpotBuyGuardLogged = false;
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private processing = false;
@@ -255,8 +259,15 @@ export class OffsetMakerEngine {
 
     safeSubscribe<AsterKline[]>(
       this.exchange.watchKlines.bind(this.exchange, this.config.symbol, "1m"),
-      (_klines) => {
-        /* no-op */
+      (klines) => {
+        if (!Array.isArray(klines) || !klines.length) return;
+        const latest = klines[klines.length - 1];
+        this.lastKline = latest;
+        const open = Number(latest.open);
+        const close = Number(latest.close);
+        if (Number.isFinite(open) && Number.isFinite(close)) {
+          this.spotKlineUp = close > open;
+        }
       },
       log,
       {
@@ -323,6 +334,7 @@ export class OffsetMakerEngine {
       const isSpotMarket = this.marketType === "spot";
       const spotBalances = isSpotMarket ? this.getSpotBalances() : null;
       const balancesForSpot = isSpotMarket ? spotBalances ?? { baseAvailable: 0, quoteAvailable: 0 } : spotBalances;
+      this.updateLiveCandle();
       const handledImbalance = await this.handleImbalanceExit(position, buySum, sellSum);
       if (handledImbalance) {
         this.emitUpdate();
@@ -361,6 +373,7 @@ export class OffsetMakerEngine {
       }
       const desired: DesiredOrder[] = [];
       const canEnter = !this.rateLimit.shouldBlockEntries();
+      const allowSpotBuy = !isSpotMarket || this.isSpotKlineUp();
 
       if (absPosition < EPS && isSpotMarket) {
         this.entryPricePendingLogged = false;
@@ -375,22 +388,29 @@ export class OffsetMakerEngine {
           }
         }
         if (!skipBuySide && canEnter) {
-          const buyAmount = this.computeSpotOrderSize({
-            side: "BUY",
-            desiredAmount: this.config.tradeAmount,
-            price: bidPrice != null ? Number(bidPrice) : null,
-            balances: balancesForSpot,
-          });
-          if (bidPrice != null && buyAmount >= EPS) {
-            this.lastBuyPriceViable = true;
-            desired.push({ side: "BUY", price: bidPrice, amount: buyAmount, reduceOnly: false });
-          } else if (this.lastBuyPriceViable) {
-            this.lastBuyPriceViable = false;
-            const reason =
-              buyAmount < EPS && isSpotMarket
-                ? "现货可用报价资产不足，跳过买单"
-                : "跳过买单：价差不足以构造maker价格";
-            this.tradeLog.push("info", reason);
+          if (!allowSpotBuy) {
+            if (this.lastBuyPriceViable) {
+              this.tradeLog.push("info", "现货买入仅在1m阳线，当前跳过买单");
+              this.lastBuyPriceViable = false;
+            }
+          } else {
+            const buyAmount = this.computeSpotOrderSize({
+              side: "BUY",
+              desiredAmount: this.config.tradeAmount,
+              price: bidPrice != null ? Number(bidPrice) : null,
+              balances: balancesForSpot,
+            });
+            if (bidPrice != null && buyAmount >= EPS) {
+              this.lastBuyPriceViable = true;
+              desired.push({ side: "BUY", price: bidPrice, amount: buyAmount, reduceOnly: false });
+            } else if (this.lastBuyPriceViable) {
+              this.lastBuyPriceViable = false;
+              const reason =
+                buyAmount < EPS && isSpotMarket
+                  ? "现货可用报价资产不足，跳过买单"
+                  : "跳过买单：价差不足以构造maker价格";
+              this.tradeLog.push("info", reason);
+            }
           }
         }
         if (!skipSellSide && canEnter) {
@@ -428,7 +448,14 @@ export class OffsetMakerEngine {
       } else if (absPosition < EPS) {
         this.entryPricePendingLogged = false;
         if (!skipBuySide && canEnter) {
-          desired.push({ side: "BUY", price: bidPrice, amount: this.config.tradeAmount, reduceOnly: false });
+          if (isSpotMarket && !allowSpotBuy) {
+            if (this.lastBuyPriceViable) {
+              this.tradeLog.push("info", "现货买入仅在1m阳线，当前跳过买单");
+              this.lastBuyPriceViable = false;
+            }
+          } else {
+            desired.push({ side: "BUY", price: bidPrice, amount: this.config.tradeAmount, reduceOnly: false });
+          }
         }
         if (!skipSellSide && canEnter) {
           if (isSpotMarket && minSell > 0 && this.minBaseAmount != null) {
@@ -953,6 +980,28 @@ export class OffsetMakerEngine {
 
   private getReferencePrice(): number | null {
     return getMidOrLast(this.depthSnapshot, this.tickerSnapshot);
+  }
+
+  private isSpotKlineUp(): boolean {
+    return this.spotKlineUp === true || this.isLiveCandleUp();
+  }
+
+  private isLiveCandleUp(): boolean {
+    if (!this.liveCandle) return false;
+    return this.liveCandle.close > this.liveCandle.open;
+  }
+
+  private updateLiveCandle(): void {
+    const price = this.getReferencePrice();
+    if (!Number.isFinite(price)) return;
+    const now = Date.now();
+    const minuteStart = now - (now % 60000);
+    if (!this.liveCandle || this.liveCandle.startMs !== minuteStart) {
+      this.liveCandle = { startMs: minuteStart, open: price as number, close: price as number };
+    } else {
+      this.liveCandle.close = price as number;
+    }
+    this.spotKlineUp = this.isLiveCandleUp();
   }
 
   private getPositionSnapshot(): PositionSnapshot {
