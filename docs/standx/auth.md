@@ -1,5 +1,9 @@
 ## StandX Perps Authentication
 
+官网创建的 API 提供了
+
+API Token 以及 Ed25519 Private Key，用于签名交易。
+
 ⚠️ This document is under construction.
 
 This document explains how to obtain JWT access tokens for the StandX Perps API through wallet signatures.
@@ -69,7 +73,7 @@ curl 'https://api.standx.com/v1/offchain/certs'
 
 Sign `payload.message` with your wallet private key to generate the `signature`.
 
-#### TypeScript/ES6 Implementation Reference
+#### BSC (EVM) Implementation Reference
 
 ```
 import { ethers } from "ethers";
@@ -82,6 +86,38 @@ const wallet = new ethers.Wallet(privateKey, provider);
  
 // Sign using the message from the parsed payload
 const signature = await wallet.signMessage(payload.message);
+```
+
+#### Solana Implementation Reference
+
+```
+import bs58 from "bs58";
+import { ed25519 } from "@noble/curves/ed25519";
+import { Keypair } from "@solana/web3.js";
+ 
+const privateKey = "<your_base58_encoded_private_key>"; // Keep secure; use environment variables
+const walletKeypair = Keypair.fromSecretKey(bs58.decode(privateKey));
+ 
+// Sign using the message from the parsed payload
+const messageBytes = new TextEncoder().encode(payload.message);
+const signatureBytes = ed25519.sign(
+  messageBytes,
+  walletKeypair.secretKey.slice(0, 32) // First 32 bytes are the private key
+);
+ 
+// Solana requires a specific signature format
+const signature = Buffer.from(
+  JSON.stringify({
+    input: payload,
+    output: {
+      signedMessage: Array.from(messageBytes),
+      signature: Array.from(signatureBytes),
+      account: {
+        publicKey: Array.from(walletKeypair.publicKey.toBytes()),
+      },
+    },
+  })
+).toString("base64");
 ```
 
 ### 5\. Get Access Token
@@ -220,14 +256,38 @@ fetch("/api/request_need_body_signature", {
 });
 ```
 
-### Complete Authentication Class Example
+### Complete Authentication Examples
 
-Here’s a complete implementation using a class-based approach:
+For complete, runnable implementations, see the chain-specific examples:
+
+- [EVM (BSC) Example](https://docs.standx.com/standx-api/perps-auth-evm-example) - Authentication using ethers.js for BSC and other EVM-compatible chains
+- [Solana (SVM) Example](https://docs.standx.com/standx-api/perps-auth-svm-example) - Authentication using @solana/web3.js for Solana
+
+Last updated on
+
+[About StandX API](https://docs.standx.com/standx-api/standx-api "About StandX API") [Perps Auth EVM Example](https://docs.standx.com/standx-api/perps-auth-evm-example "Perps Auth EVM Example")
+
+## StandX Perps Authentication - EVM Example
+
+This example demonstrates how to authenticate with the StandX Perps API using an EVM-compatible wallet (e.g., BSC).
+
+## Prerequisites
+
+- Node.js environment with TypeScript support
+- EVM wallet with private key
+- Required packages:
+	```
+	npm install @noble/curves @scure/base ethers
+	```
+
+## Complete Implementation
 
 ```
 import { ed25519 } from "@noble/curves/ed25519";
 import { base58 } from "@scure/base";
+import { ethers } from "ethers";
  
+// Types
 export type Chain = "bsc" | "solana";
  
 export interface SignedData {
@@ -260,6 +320,7 @@ export interface RequestSignatureHeaders {
   "x-request-signature": string;
 }
  
+// Authentication Class
 export class StandXAuth {
   private ed25519PrivateKey: Uint8Array;
   private ed25519PublicKey: Uint8Array;
@@ -343,9 +404,7 @@ export class StandXAuth {
 }
  
 // Usage Example
-import { ethers } from "ethers";
- 
-async function example() {
+async function main() {
   // Initialize auth
   const auth = new StandXAuth();
  
@@ -389,8 +448,270 @@ async function example() {
     body: payload,
   });
 }
+ 
+main().catch(console.error);
 ```
 
-Last updated on
+## Key Points
 
-[About StandX API](https://docs.standx.com/standx-api/standx-api "About StandX API") [Perps HTTP API](https://docs.standx.com/standx-api/perps-http "Perps HTTP API")
+1. **Wallet Setup**: Uses `ethers.js` to create a wallet from a private key
+2. **Message Signing**: EVM wallets sign the message directly using `wallet.signMessage()`
+3. **Signature Format**: The signature is returned as-is from the wallet (hex string)
+
+## Environment Variables
+
+Create a `.env` file with:
+
+```
+WALLET_PRIVATE_KEY=your_private_key_here
+```
+
+> **Security Note**: Never commit private keys to version control. Use environment variables or secure key management solutions.
+
+[Perps Auth](https://docs.standx.com/standx-api/perps-auth "Perps Auth") [Perps Auth SVM Example](https://docs.standx.com/standx-api/perps-auth-svm-example "Perps Auth SVM Example")
+
+## StandX Perps Authentication - Solana (SVM) Example
+
+This example demonstrates how to authenticate with the StandX Perps API using a Solana wallet.
+
+## Prerequisites
+
+- Node.js environment with TypeScript support
+- Solana wallet with private key (base58-encoded)
+- Required packages:
+	```
+	npm install @noble/curves @scure/base @solana/web3.js bs58
+	```
+
+## Complete Implementation
+
+```
+import { ed25519 } from "@noble/curves/ed25519";
+import { base58 } from "@scure/base";
+import bs58 from "bs58";
+import { Keypair } from "@solana/web3.js";
+ 
+// Types
+export type Chain = "bsc" | "solana";
+ 
+export interface SignedData {
+  domain: string;
+  uri: string;
+  statement: string;
+  version: string;
+  chainId: number;
+  nonce: string;
+  address: string;
+  requestId: string;
+  issuedAt: string;
+  message: string;
+  exp: number;
+  iat: number;
+}
+ 
+export interface LoginResponse {
+  token: string;
+  address: string;
+  alias: string;
+  chain: string;
+  perpsAlpha: boolean;
+}
+ 
+export interface RequestSignatureHeaders {
+  "x-request-sign-version": string;
+  "x-request-id": string;
+  "x-request-timestamp": string;
+  "x-request-signature": string;
+}
+ 
+// Authentication Class
+export class StandXAuth {
+  private ed25519PrivateKey: Uint8Array;
+  private ed25519PublicKey: Uint8Array;
+  private requestId: string;
+  private baseUrl = "https://api.standx.com";
+ 
+  constructor() {
+    const privateKey = ed25519.utils.randomSecretKey();
+    this.ed25519PrivateKey = privateKey;
+    this.ed25519PublicKey = ed25519.getPublicKey(privateKey);
+    this.requestId = base58.encode(this.ed25519PublicKey);
+  }
+ 
+  async authenticate(
+    chain: Chain,
+    walletAddress: string,
+    signMessage: (msg: string, payload: SignedData) => Promise<string>
+  ): Promise<LoginResponse> {
+    const signedDataJwt = await this.prepareSignIn(chain, walletAddress);
+    const payload = this.parseJwt<SignedData>(signedDataJwt);
+    const signature = await signMessage(payload.message, payload);
+    return this.login(chain, signature, signedDataJwt);
+  }
+ 
+  private async prepareSignIn(chain: Chain, address: string): Promise<string> {
+    const res = await fetch(
+      \`${this.baseUrl}/v1/offchain/prepare-signin?chain=${chain}\`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address, requestId: this.requestId }),
+      }
+    );
+    const data = await res.json();
+    if (!data.success) throw new Error("Failed to prepare sign-in");
+    return data.signedData;
+  }
+ 
+  private async login(
+    chain: Chain,
+    signature: string,
+    signedData: string,
+    expiresSeconds: number = 604800 // default: 7 days
+  ): Promise<LoginResponse> {
+    const res = await fetch(
+      \`${this.baseUrl}/v1/offchain/login?chain=${chain}\`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signature, signedData, expiresSeconds }),
+      }
+    );
+    return res.json();
+  }
+ 
+  signRequest(
+    payload: string,
+    requestId: string,
+    timestamp: number
+  ): RequestSignatureHeaders {
+    const version = "v1";
+    const message = \`${version},${requestId},${timestamp},${payload}\`;
+    const signature = ed25519.sign(
+      Buffer.from(message, "utf-8"),
+      this.ed25519PrivateKey
+    );
+ 
+    return {
+      "x-request-sign-version": version,
+      "x-request-id": requestId,
+      "x-request-timestamp": timestamp.toString(),
+      "x-request-signature": Buffer.from(signature).toString("base64"),
+    };
+  }
+ 
+  private parseJwt<T>(token: string): T {
+    const base64Url = token.split(".")[1];
+    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(Buffer.from(base64, "base64").toString("utf-8"));
+  }
+}
+ 
+// Usage Example
+async function main() {
+  // Initialize auth
+  const auth = new StandXAuth();
+ 
+  // Setup wallet from base58-encoded private key
+  const privateKey = process.env.SOLANA_PRIVATE_KEY!;
+  const walletKeypair = Keypair.fromSecretKey(bs58.decode(privateKey));
+  const walletAddress = walletKeypair.publicKey.toBase58();
+ 
+  // Authenticate
+  const loginResponse = await auth.authenticate(
+    "solana",
+    walletAddress,
+    async (message, payload) => {
+      const messageBytes = new TextEncoder().encode(message);
+      const signatureBytes = ed25519.sign(
+        messageBytes,
+        walletKeypair.secretKey.slice(0, 32) // First 32 bytes are the private key
+      );
+ 
+      // Solana requires a specific signature format
+      return Buffer.from(
+        JSON.stringify({
+          input: payload,
+          output: {
+            signedMessage: Array.from(messageBytes),
+            signature: Array.from(signatureBytes),
+            account: {
+              publicKey: Array.from(walletKeypair.publicKey.toBytes()),
+            },
+          },
+        })
+      ).toString("base64");
+    }
+  );
+ 
+  console.log("Access Token:", loginResponse.token);
+ 
+  // Sign a request
+  const payload = JSON.stringify({
+    symbol: "BTC-USD",
+    side: "buy",
+    order_type: "limit",
+    qty: "0.1",
+    price: "50000",
+    time_in_force: "gtc",
+    reduce_only: false,
+  });
+ 
+  const headers = auth.signRequest(payload, crypto.randomUUID(), Date.now());
+ 
+  // Make authenticated request
+  await fetch("https://perps.standx.com/api/new_order", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: \`Bearer ${loginResponse.token}\`,
+      ...headers,
+    },
+    body: payload,
+  });
+}
+ 
+main().catch(console.error);
+```
+
+## Key Points
+
+1. **Wallet Setup**: Uses `@solana/web3.js` Keypair with a base58-encoded private key
+2. **Message Signing**: Uses `@noble/curves/ed25519` for Ed25519 signing with `walletKeypair.secretKey.slice(0, 32)` (first 32 bytes are the private key)
+3. **Signature Format**: Solana requires a specific JSON structure containing:
+	- `input`: The original payload from the server
+	- `output.signedMessage`: The message bytes as an array
+	- `output.signature`: The signature bytes as an array
+	- `output.account.publicKey`: The wallet’s public key bytes as an array
+	This JSON is then base64-encoded before being sent to the server.
+
+## Signature Format Explanation
+
+Unlike EVM wallets that return a simple hex signature, Solana authentication requires a structured response:
+
+```
+{
+  input: payload,           // Original SignedData from server
+  output: {
+    signedMessage: [...],   // Message bytes as number array
+    signature: [...],       // Ed25519 signature bytes as number array
+    account: {
+      publicKey: [...]      // Wallet public key bytes as number array
+    }
+  }
+}
+```
+
+This format allows the server to verify both the signature and the signing account.
+
+## Environment Variables
+
+Create a `.env` file with:
+
+```
+SOLANA_PRIVATE_KEY=your_base58_encoded_private_key_here
+```
+
+> **Security Note**: Never commit private keys to version control. Use environment variables or secure key management solutions.
+
+[Perps Auth EVM Example](https://docs.standx.com/standx-api/perps-auth-evm-example "Perps Auth EVM Example") [Perps HTTP API](https://docs.standx.com/standx-api/perps-http "Perps HTTP API")

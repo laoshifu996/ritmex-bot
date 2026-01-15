@@ -10,22 +10,47 @@ export interface StandxTokenConfig {
   expiryTimestamp: number | null;
 }
 
-function parseTimestamp(value: string | undefined): number | null {
-  if (!value || !value.trim()) return null;
-  const trimmed = value.trim();
-  const asNumber = Number(trimmed);
-  if (Number.isFinite(asNumber) && asNumber > 0) {
-    return asNumber < 1e12 ? asNumber * 1000 : asNumber;
+function parseTokenExpiry(): number | null {
+  // Method 1: Use creation date + validity days (recommended for official API tokens)
+  const createDate = process.env.STANDX_TOKEN_CREATE_DATE?.trim();
+  const validityDays = process.env.STANDX_TOKEN_VALIDITY_DAYS?.trim();
+
+  if (createDate && validityDays) {
+    // Parse date in YYYY-MM-DD format
+    const dateMatch = createDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (dateMatch) {
+      const [, year, month, day] = dateMatch;
+      const createTimestamp = Date.UTC(
+        Number(year),
+        Number(month) - 1, // Month is 0-indexed
+        Number(day),
+        0, 0, 0, 0
+      );
+      const days = Number(validityDays);
+      if (Number.isFinite(createTimestamp) && Number.isFinite(days) && days > 0) {
+        return createTimestamp + days * 24 * 60 * 60 * 1000;
+      }
+    }
   }
-  const asDate = Date.parse(trimmed);
-  if (Number.isFinite(asDate) && asDate > 0) {
-    return asDate;
+
+  // Method 2: Use legacy STANDX_TOKEN_EXPIRY (timestamp or ISO date string)
+  const legacyExpiry = process.env.STANDX_TOKEN_EXPIRY?.trim();
+  if (legacyExpiry) {
+    const asNumber = Number(legacyExpiry);
+    if (Number.isFinite(asNumber) && asNumber > 0) {
+      return asNumber < 1e12 ? asNumber * 1000 : asNumber;
+    }
+    const asDate = Date.parse(legacyExpiry);
+    if (Number.isFinite(asDate) && asDate > 0) {
+      return asDate;
+    }
   }
+
   return null;
 }
 
 export const standxTokenConfig: StandxTokenConfig = {
-  expiryTimestamp: parseTimestamp(process.env.STANDX_TOKEN_EXPIRY),
+  expiryTimestamp: parseTokenExpiry(),
 };
 
 export function isStandxTokenExpired(): boolean {

@@ -38,7 +38,7 @@ bun install
 
 ---
 
-## 第三步：获取 StandX 登录凭证（最重要的一步）
+## 第三步：获取 StandX API Token（最重要的一步）
 
 > ⚠️ **这一步是 90% 新手卡住的地方，请仔细阅读！**
 >
@@ -47,56 +47,47 @@ bun install
 > ⚠️ **这一步是 90% 新手卡住的地方，请仔细阅读！**
 
 策略需要两样东西才能帮你下单：
-1. **TOKEN**（登录令牌）
+1. **TOKEN**（API 令牌）
 2. **代理钱包私钥**（用于签名交易）
 
 ### 获取步骤（图文说明）：
 
-#### 3.1 打开专用登录页面
+#### 3.1 打开 StandX 官方 API 创建页面
 
 在浏览器打开这个网址：
 ```
-https://standx.ritmex.one/
+https://standx.com/user/session
 ```
 
-> **注意：不是 standx.com！是 standx.ritmex.one！**
+> **现在可以直接在 StandX 官网创建 API Token 了！**
+
+#### 3.2 连接你的钱包并登录
+
+如果还没登录，先连接钱包并登录你的 StandX 账户。
+
+#### 3.3 生成 API Token
+
+点击页面上的 **"Generate API Token"** 按钮。
+
+你会看到类似这样的信息：
+- **Token**（很长一串以 eyJ 开头的字符串）
+- **Ed25519 Private Key**（Base58 格式的私钥，类似 `HdsyJD7oWgT756124j3taSPGv...`）
+- **创建日期**（例如：2025-01-15）
+- **有效期天数**（例如：30 天）
+
+> 🔴 **请把这些值复制保存下来！**
 >
-> **注意：不是 standx.com！是 standx.ritmex.one！**
+> 🔴 **请把这些值复制保存下来！**
 >
-> **注意：不是 standx.com！是 standx.ritmex.one！**
+> 🔴 **请把这些值复制保存下来！**
 
-#### 3.2 连接你的钱包
+### 什么是 Ed25519 Private Key？
 
-点击页面上的 **"连接钱包"** 按钮，使用 MetaMask 或其他钱包连接。
-
-#### 3.3 点击登录
-
-连接钱包后，点击 **"登录"** 按钮。钱包会弹出签名请求，确认签名。
-
-#### 3.4 导出登录信息（关键！）
-
-登录成功后，页面上会出现 **"导出登录信息"** 按钮，**点击它**！
-
-你会看到类似这样的内容：
-
-```
-Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xxxxx...（很长一串）
-
-代理钱包私钥: 1234567890abcdef...（64 位十六进制字符）
-```
-
-> 🔴 **请把这两个值复制保存下来！**
->
-> 🔴 **请把这两个值复制保存下来！**
->
-> 🔴 **请把这两个值复制保存下来！**
-
-### 什么是代理钱包？
-
-- 代理钱包是系统 **自动为你生成** 的一个临时钱包
-- 它 **只用于签名交易**，不存放你的资金
+- 这是系统 **自动为你生成** 的一个 Ed25519 签名私钥
+- 它 **只用于签名交易请求**，不存放你的资金
 - 你的资产仍然在你自己的钱包里，非常安全
-- **你不需要手动创建**，登录时系统会自动生成
+- **你不需要手动创建**，生成 API Token 时系统会自动创建
+- 格式为 Base58 编码（类似 `HdsyJD7oWgT756124j3taSPGv17vo5u7FafDq3vrun4f`）
 
 ---
 
@@ -126,12 +117,12 @@ nano .env
 # ===== 交易所设置 =====
 EXCHANGE=standx
 
-# ===== 你的登录凭证（第三步获取的） =====
-# 把下面的 "你的TOKEN" 替换成你导出的 Token（很长一串以 eyJ 开头的）
+# ===== 你的 API 凭证（第三步获取的） =====
+# 把下面的 "你的TOKEN" 替换成你生成的 Token（很长一串以 eyJ 开头的）
 STANDX_TOKEN=你的TOKEN
 
-# 把下面的 "你的私钥" 替换成页面中标注为 STANDX_REQUEST_PRIVATE_KEY 的那一段内容（按页面原样粘贴即可）
-STANDX_REQUEST_PRIVATE_KEY=你的 STANDX_REQUEST_PRIVATE_KEY
+# 把下面的 "你的私钥" 替换成页面中显示的代理钱包私钥（按页面原样粘贴即可）
+STANDX_REQUEST_PRIVATE_KEY=你的代理钱包私钥
 
 # ===== 交易品种 =====
 STANDX_SYMBOL=BTC-USD
@@ -147,13 +138,12 @@ MAKER_POINTS_BAND_0_10=true
 MAKER_POINTS_BAND_10_30=true
 MAKER_POINTS_BAND_30_100=true
 
-# ===== Token 过期时间配置（可选） =====
-# 配置 Token 过期时间后，策略会在 Token 过期前提醒你，过期后自动进入安全模式
-# 格式1：时间戳（毫秒），例如：1735689600000
-# 格式2：时间戳（秒），例如：1735689600（会自动转换为毫秒）
-# 格式3：ISO 日期字符串，例如：2025-01-01T00:00:00Z
-# 如果不配置此项，策略不会检查 Token 过期时间
-# STANDX_TOKEN_EXPIRY=1735689600000
+# ===== Token 过期时间配置（推荐配置） =====
+# 填写你创建 API Token 时显示的创建日期和有效期天数
+# 创建日期格式：YYYY-MM-DD（例如：2025-01-15）
+STANDX_TOKEN_CREATE_DATE=2025-01-15
+# 有效期天数（例如：30）
+STANDX_TOKEN_VALIDITY_DAYS=30
 
 # ===== Telegram 通知配置（可选） =====
 # 配置后，策略会通过 Telegram 发送重要通知（订单成交、开仓、平仓、止损、Token过期等）
@@ -166,16 +156,18 @@ MAKER_POINTS_BAND_30_100=true
 
 ### 正确填写示例
 
-假设你导出的信息是：
-- Token: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ`
-- 代理钱包私钥: `abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890`
+假设你生成的 API Token 信息是：
+- Token: `eyJhbGciOiJFUzI1NiIsImtpZCI6IlhnaEJQSVNuN0RQVHlMcWJtLUVHVkVhOU1lMFpwdU9iMk1Qc2gtbUFlencifQ...`
+- Ed25519 Private Key: `HdsyJD7oWgT756124j3taSPGv17vo5u7FafDq3vrun4f`
+- 创建日期: `2025-01-15`
+- 有效期: `30` 天
 
 那么你的 `.env` 应该这样写：
 
 ```bash
 EXCHANGE=standx
-STANDX_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ
-STANDX_REQUEST_PRIVATE_KEY=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890
+STANDX_TOKEN=eyJhbGciOiJFUzI1NiIsImtpZCI6IlhnaEJQSVNuN0RQVHlMcWJtLUVHVkVhOU1lMFpwdU9iMk1Qc2gtbUFlencifQ...
+STANDX_REQUEST_PRIVATE_KEY=HdsyJD7oWgT756124j3taSPGv17vo5u7FafDq3vrun4f
 STANDX_SYMBOL=BTC-USD
 MAKER_POINTS_ORDER_AMOUNT=0.01
 MAKER_POINTS_CLOSE_THRESHOLD=0.1
@@ -184,7 +176,8 @@ MAKER_POINTS_MIN_REPRICE_BPS=3
 MAKER_POINTS_BAND_0_10=true
 MAKER_POINTS_BAND_10_30=true
 MAKER_POINTS_BAND_30_100=true
-# STANDX_TOKEN_EXPIRY=1735689600000
+STANDX_TOKEN_CREATE_DATE=2025-01-15
+STANDX_TOKEN_VALIDITY_DAYS=30
 # TELEGRAM_BOT_TOKEN=你的BotToken
 # TELEGRAM_CHAT_ID=你的ChatID
 ```
@@ -215,21 +208,22 @@ bun run pm2:start:maker-points
 
 | 参数 | 含义 | 新手建议 |
 |------|------|----------|
-| `STANDX_TOKEN` | 登录令牌 | 必填，从第三步获取 |
+| `STANDX_TOKEN` | API 令牌 | 必填，从第三步获取 |
 | `STANDX_REQUEST_PRIVATE_KEY` | 代理钱包私钥 | 必填，从第三步获取 |
 | `STANDX_SYMBOL` | 交易品种 | 默认 `BTC-USD` |
 | `MAKER_POINTS_ORDER_AMOUNT` | 每笔挂单数量 | 建议 `0.01` 起步 |
 | `MAKER_POINTS_CLOSE_THRESHOLD` | 持仓达到多少开始平仓 | 设为 `0` 表示不自动平仓 |
 | `MAKER_POINTS_STOP_LOSS_USD` | 亏损多少美元强制平仓 | 设为 `0` 表示关闭止损 |
 | `MAKER_POINTS_BAND_*` | 三个挂单档位的开关 | 全部 `true` 即可 |
-| `STANDX_TOKEN_EXPIRY` | Token 过期时间 | 可选，格式见下方说明 |
+| `STANDX_TOKEN_CREATE_DATE` | Token 创建日期 | 推荐配置，格式 YYYY-MM-DD |
+| `STANDX_TOKEN_VALIDITY_DAYS` | Token 有效期天数 | 推荐配置，与创建日期配合使用 |
 | `TELEGRAM_BOT_TOKEN` | Telegram 机器人 Token | 可选，用于接收通知 |
 | `TELEGRAM_CHAT_ID` | Telegram 聊天 ID | 可选，配合 Bot Token 使用 |
 | `TELEGRAM_ACCOUNT_LABEL` | Telegram 通知账户标签 | 可选，用于区分多个账户 |
 
 ### Token 过期时间配置详解
 
-`STANDX_TOKEN_EXPIRY` 用于设置 Token 的过期时间。配置后，策略会：
+`STANDX_TOKEN_CREATE_DATE` 和 `STANDX_TOKEN_VALIDITY_DAYS` 用于设置 Token 的过期时间。配置后，策略会：
 
 1. **Token 过期前 1 小时**：在日志中提醒你 Token 即将过期
 2. **Token 过期后**：
@@ -237,28 +231,35 @@ bun run pm2:start:maker-points
    - 如果无持仓但有挂单：**自动取消所有挂单**
    - 如果无持仓无挂单：进入**静默模式**，只接收数据，不下单
 
-**支持的格式：**
-- **时间戳（毫秒）**：`1735689600000`
-- **时间戳（秒）**：`1735689600`（会自动转换为毫秒）
-- **ISO 日期字符串**：`2025-01-01T00:00:00Z` 或 `2025-01-01 00:00:00`
+**推荐配置方式（创建日期 + 有效期天数）：**
 
-**如何获取 Token 过期时间？**
+在 StandX 官网生成 API Token 时，页面会显示创建日期和有效期天数，直接填入即可：
 
-登录 standx.ritmex.one 时，系统会返回 Token 的有效期。你可以在导出登录信息时查看，或者根据登录时设置的过期时间计算。
-
-**示例：**
 ```bash
-# 方式1：使用时间戳（毫秒）
-STANDX_TOKEN_EXPIRY=1735689600000
+# 创建日期（格式：YYYY-MM-DD）
+STANDX_TOKEN_CREATE_DATE=2025-01-15
+# 有效期天数
+STANDX_TOKEN_VALIDITY_DAYS=30
+```
 
-# 方式2：使用时间戳（秒）
+**示例计算：**
+- 创建日期：2025-01-15
+- 有效期：30 天
+- 过期时间：2025-02-14 00:00:00 UTC
+
+**兼容旧版配置（直接指定过期时间戳）：**
+
+如果你之前使用的是 `STANDX_TOKEN_EXPIRY`，仍然可以继续使用：
+
+```bash
+# 方式1：使用时间戳（秒）
 STANDX_TOKEN_EXPIRY=1735689600
 
-# 方式3：使用 ISO 日期字符串
+# 方式2：使用 ISO 日期字符串
 STANDX_TOKEN_EXPIRY=2025-01-01T00:00:00Z
 ```
 
-> 💡 **提示**：如果不配置此项，策略不会检查 Token 过期时间，但建议配置以便及时收到提醒。
+> 💡 **提示**：推荐使用新的创建日期 + 有效期天数方式，更直观易懂。
 
 ### Telegram 通知配置详解
 
@@ -302,14 +303,15 @@ STANDX_TOKEN_EXPIRY=2025-01-01T00:00:00Z
 
 ### Q：报错说 Token 无效怎么办？
 
-重新去 https://standx.ritmex.one/ 登录，重新导出 Token。Token 可能过期了。
+重新去 https://standx.com/user/session 生成新的 API Token。Token 可能过期了。
 
-### Q：代理钱包私钥从哪来的？
+### Q：Ed25519 Private Key 从哪来的？
 
-登录 standx.ritmex.one 后点击"导出登录信息"就能看到。
-**你不需要自己创建钱包，系统会自动生成！**
-**你不需要自己创建钱包，系统会自动生成！**
-**你不需要自己创建钱包，系统会自动生成！**
+在 StandX 官网（https://standx.com/user/session）点击 "Generate API Token" 按钮时会显示。
+私钥格式为 Base58 编码（类似 `HdsyJD7oWgT756124j3taSPGv17vo5u7FafDq3vrun4f`）。
+**你不需要自己创建，系统会自动生成！**
+**你不需要自己创建，系统会自动生成！**
+**你不需要自己创建，系统会自动生成！**
 
 ### Q：.env 文件放在哪？
 
@@ -327,7 +329,7 @@ STANDX_TOKEN_EXPIRY=2025-01-01T00:00:00Z
 
 ### Q：如何知道 Token 什么时候过期？
 
-配置 `STANDX_TOKEN_EXPIRY` 环境变量，策略会在 Token 过期前 1 小时提醒你。Token 过期后，如果有持仓会进入平仓模式，只允许平仓和止损。
+配置 `STANDX_TOKEN_CREATE_DATE`（创建日期）和 `STANDX_TOKEN_VALIDITY_DAYS`（有效期天数），策略会在 Token 过期前 1 小时提醒你。这两个值在生成 API Token 时会显示。Token 过期后，如果有持仓会进入平仓模式，只允许平仓和止损。
 
 ### Q：Telegram 通知收不到怎么办？
 

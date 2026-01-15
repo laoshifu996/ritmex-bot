@@ -107,21 +107,66 @@ class StandxRequestSigner {
   }
 }
 
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function decodeBase58(input: string): Uint8Array | null {
+  try {
+    const bytes: number[] = [];
+    for (const char of input) {
+      const value = BASE58_ALPHABET.indexOf(char);
+      if (value === -1) return null;
+      let carry = value;
+      for (let i = 0; i < bytes.length; i += 1) {
+        const current = bytes[i] ?? 0;
+        carry += current * 58;
+        bytes[i] = carry & 0xff;
+        carry >>= 8;
+      }
+      while (carry > 0) {
+        bytes.push(carry & 0xff);
+        carry >>= 8;
+      }
+    }
+    // Handle leading zeros
+    for (const char of input) {
+      if (char !== "1") break;
+      bytes.push(0);
+    }
+    return Uint8Array.from(bytes.reverse());
+  } catch {
+    return null;
+  }
+}
+
 function parseSigningKey(value?: string): Uint8Array | null {
   if (!value) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
+  // 0x-prefixed hex
   if (/^0x[0-9a-fA-F]+$/.test(trimmed)) {
     return Uint8Array.from(Buffer.from(trimmed.slice(2), "hex"));
   }
+  // Pure hex (64 chars = 32 bytes for ed25519 private key)
   if (/^[0-9a-fA-F]+$/.test(trimmed)) {
     return Uint8Array.from(Buffer.from(trimmed, "hex"));
   }
-  try {
-    return Uint8Array.from(Buffer.from(trimmed, "base64"));
-  } catch {
-    return null;
+  // Base58 (official StandX API format)
+  if (/^[1-9A-HJ-NP-Za-km-z]+$/.test(trimmed)) {
+    const decoded = decodeBase58(trimmed);
+    if (decoded && decoded.length === 32) {
+      return decoded;
+    }
   }
+  // Base64 fallback
+  try {
+    const decoded = Uint8Array.from(Buffer.from(trimmed, "base64"));
+    if (decoded.length === 32) {
+      return decoded;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
 }
 
 function normalizeSymbol(raw: string): string {
