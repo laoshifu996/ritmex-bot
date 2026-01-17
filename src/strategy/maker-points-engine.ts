@@ -467,8 +467,8 @@ export class MakerPointsEngine {
 
 
       const binanceSnapshot = this.binanceDepth.getSnapshot();
-      const rawSkipBuy = Boolean(binanceSnapshot?.skipBuySide);
-      const rawSkipSell = Boolean(binanceSnapshot?.skipSellSide);
+      const rawSkipBuy = this.config.enableBinanceDepthCancel && Boolean(binanceSnapshot?.skipBuySide);
+      const rawSkipSell = this.config.enableBinanceDepthCancel && Boolean(binanceSnapshot?.skipSellSide);
       const skipBuy = closeOnly ? false : rawSkipBuy;
       const skipSell = closeOnly ? false : rawSkipSell;
       const prevSkipBuy = this.lastSkipBuy;
@@ -542,8 +542,6 @@ export class MakerPointsEngine {
     skipSell: boolean;
   }): DesiredOrder[] {
     const { bid1, ask1, skipBuy, skipSell } = params;
-    const amount = Number(this.config.perOrderAmount);
-    if (!Number.isFinite(amount) || amount <= 0) return [];
 
     const targets = buildBpsTargets({
       band0To10: this.config.enableBand0To10,
@@ -556,7 +554,16 @@ export class MakerPointsEngine {
     const priceDecimals = this.getPriceDecimals();
     const desired: DesiredOrder[] = [];
 
+    const getAmountForBps = (bps: number): number => {
+      if (bps <= 10) return Number(this.config.band0To10Amount);
+      if (bps <= 30) return Number(this.config.band10To30Amount);
+      return Number(this.config.band30To100Amount);
+    };
+
     for (const bps of targets) {
+      const amount = getAmountForBps(bps);
+      if (!Number.isFinite(amount) || amount <= 0) continue;
+
       if (!skipBuy) {
         const price = bid1 * (1 - bps / 10000);
         if (Number.isFinite(price) && price > 0) {

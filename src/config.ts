@@ -187,12 +187,22 @@ export interface MakerPointsConfig {
   enableBand0To10: boolean;
   enableBand10To30: boolean;
   enableBand30To100: boolean;
+  /** 0-10 bps 档位挂单数量，未配置时使用 perOrderAmount */
+  band0To10Amount: number;
+  /** 10-30 bps 档位挂单数量，未配置时使用 perOrderAmount */
+  band10To30Amount: number;
+  /** 30-100 bps 档位挂单数量，未配置时使用 perOrderAmount */
+  band30To100Amount: number;
   minRepriceBps: number;
+  /** 是否根据 Binance 盘口深度失衡自动取消单边挂单，默认 true */
+  enableBinanceDepthCancel: boolean;
 }
+
+const defaultMakerPointsAmount = parseNumber(process.env.MAKER_POINTS_ORDER_AMOUNT, parseNumber(process.env.TRADE_AMOUNT, 0.001));
 
 export const makerPointsConfig: MakerPointsConfig = {
   symbol: resolveSymbolFromEnv("standx"),
-  perOrderAmount: parseNumber(process.env.MAKER_POINTS_ORDER_AMOUNT, parseNumber(process.env.TRADE_AMOUNT, 0.001)),
+  perOrderAmount: defaultMakerPointsAmount,
   closeThreshold: parseNumber(process.env.MAKER_POINTS_CLOSE_THRESHOLD, 0),
   stopLossUsd: parseNumber(process.env.MAKER_POINTS_STOP_LOSS_USD, 0),
   refreshIntervalMs: parseNumber(process.env.MAKER_POINTS_REFRESH_INTERVAL_MS, 500),
@@ -206,7 +216,11 @@ export const makerPointsConfig: MakerPointsConfig = {
   enableBand0To10: parseBoolean(process.env.MAKER_POINTS_BAND_0_10, true),
   enableBand10To30: parseBoolean(process.env.MAKER_POINTS_BAND_10_30, true),
   enableBand30To100: parseBoolean(process.env.MAKER_POINTS_BAND_30_100, true),
+  band0To10Amount: parseNumber(process.env.MAKER_POINTS_BAND_0_10_AMOUNT, defaultMakerPointsAmount),
+  band10To30Amount: parseNumber(process.env.MAKER_POINTS_BAND_10_30_AMOUNT, defaultMakerPointsAmount),
+  band30To100Amount: parseNumber(process.env.MAKER_POINTS_BAND_30_100_AMOUNT, defaultMakerPointsAmount),
   minRepriceBps: parseNumber(process.env.MAKER_POINTS_MIN_REPRICE_BPS, 3),
+  enableBinanceDepthCancel: parseBoolean(process.env.MAKER_POINTS_BINANCE_DEPTH_CANCEL, true),
 };
 
 export interface BasisArbConfig {
