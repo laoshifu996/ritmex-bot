@@ -86,6 +86,8 @@ const INSUFFICIENT_BALANCE_COOLDOWN_MS = 15_000;
 const STOP_LOSS_COOLDOWN_MS = 5_000;
 const STOP_LOSS_CHECK_INTERVAL_MS = 250; // 止损检查最大间隔
 const STOP_LOSS_RETRY_INTERVAL_MS = 500; // 止损失败后重试间隔
+const DATA_STALE_THRESHOLD_MS = 5_000; // 数据过时阈值（5秒）
+const DEFENSE_MODE_CHECK_INTERVAL_MS = 1000; // 防御模式检查间隔
 
 export class MakerPointsEngine {
   private accountSnapshot: AsterAccountSnapshot | null = null;
@@ -153,11 +155,24 @@ export class MakerPointsEngine {
   private lastPositionAmt = 0;
   private lastPositionSide: "LONG" | "SHORT" | "FLAT" = "FLAT";
 
-  // 连接保护相关状态
-  private standxConnectionState: "connected" | "disconnected" = "connected";
+  // 连接保护相关状态（用于断连/重连事件处理）
+  private _standxConnectionState: "connected" | "disconnected" = "connected";
   private reconnectResetPending = false;
   private lastRepriceQueryTime = 0;
   private readonly repriceQueryIntervalMs = 3000; // 最小查询间隔
+
+  // ========== 数据过时防御模式 ==========
+  // 各数据源最后更新时间
+  private lastStandxDepthTime = 0;
+  private lastStandxAccountTime = 0;
+  private lastBinanceDepthTime = 0;
+  // 防御模式状态
+  private defenseMode = false;
+  private defenseModeNotified = false;
+  private defenseModeTimer: ReturnType<typeof setInterval> | null = null;
+  // 防御模式下的 REST 轮询定时器
+  private defenseRestPollTimer: ReturnType<typeof setTimeout> | null = null;
+  private defenseRestPollActive = false;
 
   constructor(private readonly config: MakerPointsConfig, private readonly exchange: ExchangeAdapter) {
     this.tradeLog = createTradeLog(this.config.maxLogEntries);
@@ -177,6 +192,7 @@ export class MakerPointsEngine {
     });
     this.binanceDepth.onUpdate(() => {
       this.feedStatus.binance = true;
+      this.lastBinanceDepthTime = Date.now();
       this.emitUpdate();
     });
     // 监听 Binance 连接状态变化
@@ -198,6 +214,12 @@ export class MakerPointsEngine {
 
   start(): void {
     if (this.timer) return;
+    // 初始化数据时间戳
+    const now = Date.now();
+    this.lastStandxDepthTime = now;
+    this.lastStandxAccountTime = now;
+    this.lastBinanceDepthTime = now;
+
     this.timer = setInterval(() => {
       void this.tick();
     }, this.config.refreshIntervalMs);
@@ -205,6 +227,12 @@ export class MakerPointsEngine {
       this.stopLossTimer = setInterval(() => {
         void this.checkStopLoss();
       }, Math.min(STOP_LOSS_CHECK_INTERVAL_MS, this.config.refreshIntervalMs));
+    }
+    // 启动防御模式检测定时器
+    if (!this.defenseModeTimer) {
+      this.defenseModeTimer = setInterval(() => {
+        this.checkDataStaleAndDefense();
+      }, DEFENSE_MODE_CHECK_INTERVAL_MS);
     }
     this.binanceDepth.start();
   }
@@ -218,6 +246,11 @@ export class MakerPointsEngine {
       clearInterval(this.stopLossTimer);
       this.stopLossTimer = null;
     }
+    if (this.defenseModeTimer) {
+      clearInterval(this.defenseModeTimer);
+      this.defenseModeTimer = null;
+    }
+    this.stopDefenseRestPoll();
     this.binanceDepth.stop();
   }
 
@@ -240,6 +273,7 @@ export class MakerPointsEngine {
       this.exchange.watchAccount.bind(this.exchange),
       (snapshot) => {
         this.accountSnapshot = snapshot;
+        this.lastStandxAccountTime = Date.now();
         const totalUnrealized = Number(snapshot.totalUnrealizedProfit ?? "0");
         if (Number.isFinite(totalUnrealized)) {
           this.accountUnrealized = totalUnrealized;
@@ -290,6 +324,7 @@ export class MakerPointsEngine {
       this.exchange.watchDepth.bind(this.exchange, this.config.symbol),
       (depth) => {
         this.depthSnapshot = depth;
+        this.lastStandxDepthTime = Date.now();
         this.feedStatus.depth = true;
         this.emitUpdate();
       },
@@ -338,7 +373,7 @@ export class MakerPointsEngine {
    * 处理断连事件
    */
   private handleDisconnect(symbol: string): void {
-    this.standxConnectionState = "disconnected";
+    this._standxConnectionState = "disconnected";
     this.tradeLog.push("warn", `WebSocket 断连 (${symbol})，启动断连保护`);
     this.notify({
       type: "token_expired",
@@ -355,7 +390,7 @@ export class MakerPointsEngine {
    * 重连后需要重新查询挂单并取消所有挂单
    */
   private async handleReconnect(symbol: string): Promise<void> {
-    this.standxConnectionState = "connected";
+    this._standxConnectionState = "connected";
     this.reconnectResetPending = true;
     this.tradeLog.push("info", `WebSocket 重连成功 (${symbol})，开始重连保护流程`);
 
@@ -437,6 +472,8 @@ export class MakerPointsEngine {
     if (this.reconnectResetPending) return;
     // 止损执行期间不执行主循环，避免订单冲突
     if (this.stopLossProcessing) return;
+    // 防御模式下不执行正常挂单逻辑
+    if (this.defenseMode) return;
     this.processing = true;
     let hadRateLimit = false;
     try {
@@ -1378,7 +1415,7 @@ export class MakerPointsEngine {
     this.lastPositionSide = currentSide;
   }
 
-  private async handleTokenExpiry(position: PositionSnapshot, absPosition: number): Promise<boolean> {
+  private async handleTokenExpiry(position: PositionSnapshot, _absPosition: number): Promise<boolean> {
     if (!isTokenExpiryConfigured()) {
       return false;
     }
@@ -1460,6 +1497,195 @@ export class MakerPointsEngine {
     }
 
     return true;
+  }
+
+  // ========== 数据过时防御模式方法 ==========
+
+  /**
+   * 检查数据是否过时，进入或退出防御模式
+   * 当 StandX 或 Binance 任意一方数据超过 5 秒未更新时，进入防御模式
+   */
+  private checkDataStaleAndDefense(): void {
+    const now = Date.now();
+    const standxDepthStale = this.lastStandxDepthTime > 0 && (now - this.lastStandxDepthTime) > DATA_STALE_THRESHOLD_MS;
+    const standxAccountStale = this.lastStandxAccountTime > 0 && (now - this.lastStandxAccountTime) > DATA_STALE_THRESHOLD_MS;
+    const binanceStale = this.lastBinanceDepthTime > 0 && (now - this.lastBinanceDepthTime) > DATA_STALE_THRESHOLD_MS;
+
+    const shouldDefend = standxDepthStale || standxAccountStale || binanceStale;
+
+    if (shouldDefend && !this.defenseMode) {
+      // 进入防御模式
+      this.enterDefenseMode({
+        standxDepthStale,
+        standxAccountStale,
+        binanceStale,
+        standxDepthAge: now - this.lastStandxDepthTime,
+        standxAccountAge: now - this.lastStandxAccountTime,
+        binanceAge: now - this.lastBinanceDepthTime,
+      });
+    } else if (!shouldDefend && this.defenseMode) {
+      // 退出防御模式
+      this.exitDefenseMode();
+    }
+  }
+
+  /**
+   * 进入防御模式
+   * 取消所有挂单，启动 REST 轮询保护仓位
+   */
+  private enterDefenseMode(staleInfo: {
+    standxDepthStale: boolean;
+    standxAccountStale: boolean;
+    binanceStale: boolean;
+    standxDepthAge: number;
+    standxAccountAge: number;
+    binanceAge: number;
+  }): void {
+    this.defenseMode = true;
+
+    // 构建过时信息描述
+    const staleItems: string[] = [];
+    if (staleInfo.standxDepthStale) {
+      staleItems.push(`StandX深度(${Math.round(staleInfo.standxDepthAge / 1000)}s)`);
+    }
+    if (staleInfo.standxAccountStale) {
+      staleItems.push(`StandX账户(${Math.round(staleInfo.standxAccountAge / 1000)}s)`);
+    }
+    if (staleInfo.binanceStale) {
+      staleItems.push(`Binance深度(${Math.round(staleInfo.binanceAge / 1000)}s)`);
+    }
+
+    this.tradeLog.push("warn", `数据过时检测: ${staleItems.join(", ")}，进入防御模式`);
+
+    // 发送通知
+    if (!this.defenseModeNotified) {
+      this.notify({
+        type: "token_expired",
+        level: "warn",
+        symbol: this.config.symbol,
+        title: "防御模式",
+        message: `数据推送中断: ${staleItems.join(", ")}，已取消所有挂单`,
+        details: staleInfo,
+      });
+      this.defenseModeNotified = true;
+    }
+
+    // 立即取消所有挂单
+    void this.defenseCancelAllOrders();
+
+    // 启动 REST 轮询保护仓位
+    this.startDefenseRestPoll();
+  }
+
+  /**
+   * 退出防御模式
+   */
+  private exitDefenseMode(): void {
+    this.defenseMode = false;
+    this.defenseModeNotified = false;
+
+    this.tradeLog.push("info", "数据推送恢复正常，退出防御模式");
+
+    this.notify({
+      type: "position_opened",
+      level: "info",
+      symbol: this.config.symbol,
+      title: "防御模式解除",
+      message: "数据推送恢复正常，恢复正常交易",
+      details: {},
+    });
+
+    // 停止 REST 轮询
+    this.stopDefenseRestPoll();
+
+    // 重置本地状态，强制下一轮重新计算挂单
+    this.desiredOrders = [];
+    this.lastDesiredSummary = null;
+    this.lastQuoteBid1 = null;
+    this.lastQuoteAsk1 = null;
+  }
+
+  /**
+   * 防御模式下取消所有挂单
+   */
+  private async defenseCancelAllOrders(): Promise<void> {
+    try {
+      if (this.exchange.forceCancelAllOrders) {
+        const success = await this.exchange.forceCancelAllOrders();
+        if (success) {
+          this.tradeLog.push("order", "防御模式: 已强制取消所有挂单");
+        } else {
+          this.tradeLog.push("warn", "防御模式: 取消挂单未完全成功，将继续重试");
+        }
+      } else {
+        await this.exchange.cancelAllOrders({ symbol: this.config.symbol });
+        this.tradeLog.push("order", "防御模式: 已取消所有挂单");
+      }
+
+      // 重置本地挂单状态
+      this.openOrders = [];
+      this.pendingCancelOrders.clear();
+      unlockOperating(this.locks, this.timers, this.pending, "LIMIT");
+    } catch (error) {
+      if (isUnknownOrderError(error)) {
+        this.tradeLog.push("order", "防御模式: 挂单已不存在");
+        this.openOrders = [];
+        this.pendingCancelOrders.clear();
+      } else {
+        this.tradeLog.push("error", `防御模式取消挂单失败: ${extractMessage(error)}`);
+      }
+    }
+  }
+
+  /**
+   * 启动防御模式下的 REST 轮询
+   * 使用 REST API 拉取数据，确保止损逻辑能正常工作
+   */
+  private startDefenseRestPoll(): void {
+    if (this.defenseRestPollActive) return;
+    this.defenseRestPollActive = true;
+
+    this.tradeLog.push("info", "防御模式: 启动 REST 数据轮询");
+
+    const poll = async () => {
+      if (!this.defenseRestPollActive || !this.defenseMode) return;
+
+      try {
+        // 如果有查询挂单的方法，定期检查并取消
+        if (this.exchange.queryOpenOrders) {
+          const realOrders = await this.exchange.queryOpenOrders();
+          if (realOrders.length > 0) {
+            this.tradeLog.push("warn", `防御模式: 发现 ${realOrders.length} 个挂单，执行取消`);
+            await this.defenseCancelAllOrders();
+          }
+        }
+
+        // 检查止损条件（使用当前账户快照中的数据）
+        // checkStopLoss 会继续运行，使用最后收到的数据进行止损判断
+      } catch (error) {
+        this.tradeLog.push("error", `防御模式 REST 轮询失败: ${extractMessage(error)}`);
+      }
+
+      // 继续下一次轮询
+      if (this.defenseRestPollActive && this.defenseMode) {
+        this.defenseRestPollTimer = setTimeout(() => void poll(), 2000);
+      }
+    };
+
+    void poll();
+  }
+
+  /**
+   * 停止防御模式下的 REST 轮询
+   */
+  private stopDefenseRestPoll(): void {
+    if (!this.defenseRestPollActive) return;
+    this.defenseRestPollActive = false;
+    if (this.defenseRestPollTimer) {
+      clearTimeout(this.defenseRestPollTimer);
+      this.defenseRestPollTimer = null;
+    }
+    this.tradeLog.push("info", "防御模式: 停止 REST 数据轮询");
   }
 }
 
