@@ -1,5 +1,5 @@
 import type { MakerPointsConfig } from "../config";
-import type { ExchangeAdapter, ConnectionEventType } from "../exchanges/adapter";
+import type { ExchangeAdapter } from "../exchanges/adapter";
 import type {
   AsterAccountSnapshot,
   AsterDepth,
@@ -154,7 +154,7 @@ export class MakerPointsEngine {
   private lastPositionSide: "LONG" | "SHORT" | "FLAT" = "FLAT";
 
   // 连接保护相关状态
-  private connectionState: "connected" | "disconnected" = "connected";
+  private standxConnectionState: "connected" | "disconnected" = "connected";
   private reconnectResetPending = false;
   private lastRepriceQueryTime = 0;
   private readonly repriceQueryIntervalMs = 3000; // 最小查询间隔
@@ -177,6 +177,19 @@ export class MakerPointsEngine {
     });
     this.binanceDepth.onUpdate(() => {
       this.feedStatus.binance = true;
+      this.emitUpdate();
+    });
+    // 监听 Binance 连接状态变化
+    this.binanceDepth.onConnectionChange((state) => {
+      if (state === "disconnected") {
+        this.feedStatus.binance = false;
+        this.tradeLog.push("warn", "Binance 深度连接断开");
+      } else if (state === "stale") {
+        this.tradeLog.push("warn", "Binance 深度数据过时");
+      } else if (state === "connected") {
+        this.feedStatus.binance = true;
+        this.tradeLog.push("info", "Binance 深度连接恢复");
+      }
       this.emitUpdate();
     });
     this.syncPrecision();
@@ -325,7 +338,7 @@ export class MakerPointsEngine {
    * 处理断连事件
    */
   private handleDisconnect(symbol: string): void {
-    this.connectionState = "disconnected";
+    this.standxConnectionState = "disconnected";
     this.tradeLog.push("warn", `WebSocket 断连 (${symbol})，启动断连保护`);
     this.notify({
       type: "token_expired",
@@ -342,7 +355,7 @@ export class MakerPointsEngine {
    * 重连后需要重新查询挂单并取消所有挂单
    */
   private async handleReconnect(symbol: string): Promise<void> {
-    this.connectionState = "connected";
+    this.standxConnectionState = "connected";
     this.reconnectResetPending = true;
     this.tradeLog.push("info", `WebSocket 重连成功 (${symbol})，开始重连保护流程`);
 
@@ -420,6 +433,10 @@ export class MakerPointsEngine {
 
   private async tick(): Promise<void> {
     if (this.processing) return;
+    // 重连处理期间不执行主循环，避免状态竞争
+    if (this.reconnectResetPending) return;
+    // 止损执行期间不执行主循环，避免订单冲突
+    if (this.stopLossProcessing) return;
     this.processing = true;
     let hadRateLimit = false;
     try {
@@ -747,6 +764,11 @@ export class MakerPointsEngine {
   }
 
   private async syncOrders(targets: DesiredOrder[], _closeOnly: boolean): Promise<void> {
+    // 止损执行期间不进行挂单操作，避免订单冲突
+    if (this.stopLossProcessing) return;
+    // 重连处理期间不进行挂单操作
+    if (this.reconnectResetPending) return;
+
     // 价格变化保护：如果需要 reprice 且距上次查询已过足够时间，先查询真实挂单
     const shouldVerifyOrders = await this.verifyOrdersIfNeeded();
     if (shouldVerifyOrders) {
